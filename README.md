@@ -80,9 +80,7 @@ Designed to handle gigabyte-sized XML files with:
 - Efficient buffering strategy to minimize system calls
 
 ## License
-
-[Your License Here]
+MIT
 
 ## Contributing
-
-[Contributing guidelines here]
+not needed for now.
