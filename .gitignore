@@ -1,41 +1,77 @@
-# Prerequisites
-*.d
+# Build output
+bin/
+build/
 
-# Compiled Object files
-*.slo
-*.lo
+# Object files
 *.o
 *.obj
+
+# Dependency files
+*.d
 
 # Precompiled Headers
 *.gch
 *.pch
 
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
+# Libraries
 *.a
+*.la
+*.lo
 *.lib
+*.dll
+*.so
+*.so.*
+*.dylib
 
 # Executables
 *.exe
 *.out
 *.app
+xmlformatter
+test_xmlformatter
 
-# debug information files
-*.dwo
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Core dumps
+core
+core.*
+
+# Editor/IDE specific
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-*
+.clangd/
+.cache/
+compile_commands.json
+
+# Test coverage
+*.gcda
+*.gcno
+*.gcov
+coverage/
+coverage.info
+
+# Profiling
+gmon.out
+*.prof
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# OS specific
+Thumbs.db
+desktop.ini
+
+# Bear output (compilation database)
+.bear-wrapped/
+.bear.d/
