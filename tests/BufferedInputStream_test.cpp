@@ -81,8 +81,6 @@ TEST_CASE(PeekCRLFStateRegression) {
     REQUIRE_EQ(bis.getCurrentColumn(),1u);
 
     REQUIRE_EQ(bis.getChar(),'B');                    // final char
-    //bool savedhasPendingCR = hasPendingCR_;
-    //hasPendingCR_ = savedhasPendingCR;
 }
 
 TEST_CASE(ReadWhileCompactionRegression) {
@@ -102,4 +100,40 @@ TEST_CASE(PeekDoesNotConsumeRegression) {
     REQUIRE_EQ(bis.peekChar(),'Z'); // second peek – still 'Z'
     REQUIRE_EQ(bis.getChar(),'Z');  // now consume
     REQUIRE_EQ(bis.getChar(),-1);   // EOF after consumption
+}
+
+TEST_CASE(SingleByteBufferASCII) {
+    std::istringstream in("hello");
+    LXMLFormatter::BufferedInputStream bis(in,1);        // buffer size = 1 byte
+    std::string out;
+    bis.readWhile(out,[](int32_t ch){ return ch != -1; });
+    REQUIRE_EQ(out,"hello");
+}
+
+TEST_CASE(SingleByteBufferUTF8) {
+    std::string s = u8"π";                // two‑byte UTF‑8 char
+    std::istringstream in(s);
+    LXMLFormatter::BufferedInputStream bis(in,1);        // force boundary in middle of codepoint
+    REQUIRE_EQ(bis.getChar(),0x03C0);     // π decoded correctly
+    REQUIRE_EQ(bis.getChar(),-1);
+}
+
+TEST_CASE(LargeBufferSmallInput) {
+    std::string text = "short";
+    std::istringstream in(text);
+    LXMLFormatter::BufferedInputStream bis(in,1024*1024); // 1‑MiB buffer, tiny input
+    std::string out;
+    bis.readWhile(out,[](int32_t ch){ return ch != -1; });
+    REQUIRE_EQ(out, text);
+}
+
+TEST_CASE(ZeroBufferSizeConstructor) {
+    std::istringstream in("data");
+    bool threw = false;
+    try {
+        LXMLFormatter::BufferedInputStream bis(in,0);   // invalid buffer size
+    } catch(const std::exception&) {
+        threw = true;                    // expect exception or assertion translated to throw
+    }
+    REQUIRE(threw);
 }
