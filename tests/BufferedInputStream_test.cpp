@@ -59,3 +59,47 @@ TEST_CASE(LineColumnTracking) {
     REQUIRE_EQ(bis.getCurrentColumn(), 1u);
 }
 
+TEST_CASE(PeekCRLFStateRegression) {
+    std::istringstream in("A\r\nB");
+    LXMLFormatter::BufferedInputStream bis(in,2); // tiny buffer forces boundary crossing
+
+    REQUIRE_EQ(bis.getChar(),'A');                    // consume 'A'
+    REQUIRE_EQ(bis.getCurrentLine(),1u);
+    REQUIRE_EQ(bis.getCurrentColumn(),2u);
+
+    REQUIRE_EQ(bis.getChar(),'\r');                  // consume CR, should advance line
+    REQUIRE_EQ(bis.getCurrentLine(),2u);
+    REQUIRE_EQ(bis.getCurrentColumn(),1u);
+
+    REQUIRE_EQ(bis.peekChar(),'\n');                 // look‑ahead LF across boundary
+    // State after peek should be unchanged
+    REQUIRE_EQ(bis.getCurrentLine(),2u);
+    REQUIRE_EQ(bis.getCurrentColumn(),1u);
+
+    REQUIRE_EQ(bis.getChar(),'\n');                  // now actually consume LF
+    REQUIRE_EQ(bis.getCurrentLine(),3u);             // line must increment *once*
+    REQUIRE_EQ(bis.getCurrentColumn(),1u);
+
+    REQUIRE_EQ(bis.getChar(),'B');                    // final char
+    //bool savedhasPendingCR = hasPendingCR_;
+    //hasPendingCR_ = savedhasPendingCR;
+}
+
+TEST_CASE(ReadWhileCompactionRegression) {
+    std::string text(50,'x');                         // 50 'x' characters
+    std::istringstream in(text);
+    LXMLFormatter::BufferedInputStream bis(in,8);                    // small buffer triggers multiple compactions
+    std::string out;
+    bis.readWhile(out,[](int32_t ch){ return ch=='x'; });
+    REQUIRE_EQ(out.size(), text.size());              // length must match
+    REQUIRE_EQ(out, text);                            // content must be intact
+}
+
+TEST_CASE(PeekDoesNotConsumeRegression) {
+    std::istringstream in("Z");
+    LXMLFormatter::BufferedInputStream bis(in,1);
+    REQUIRE_EQ(bis.peekChar(),'Z'); // first peek
+    REQUIRE_EQ(bis.peekChar(),'Z'); // second peek – still 'Z'
+    REQUIRE_EQ(bis.getChar(),'Z');  // now consume
+    REQUIRE_EQ(bis.getChar(),-1);   // EOF after consumption
+}

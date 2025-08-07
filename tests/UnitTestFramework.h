@@ -138,6 +138,7 @@ namespace ut {
 
 }  //namespace ut
 
+#ifndef NO_UT_MAIN
 int main() {
     int passed = 0, failed = 0;
     for (auto& [name, fn] : ut::registry()) {
@@ -157,3 +158,4 @@ int main() {
     std::cout << passed << " tests passed, " << failed << " failed\n";
     return failed ? 1 : 0;
 }
+#endif
