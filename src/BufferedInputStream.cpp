@@ -33,9 +33,15 @@ BufferedInputStream::BufferedInputStream(BufferedInputStream&& other) noexcept
     , hasPendingCR_(other.hasPendingCR_) 
 {
     // Reset moved-from object
-    other.bufferPos_ = 0;
-    other.bufferEnd_ = 0;
-    other.hasPendingCR_ = false;
+        other.buffer_.reset();
+        other.bufferSize_     = 0;
+        other.bufferPos_      = 0;
+        other.bufferEnd_      = 0;
+        other.currentLine_    = 1;
+        other.currentColumn_  = 1;
+        other.totalBytesRead_ = 0;
+        other.bomSize_        = 0;
+        other.hasPendingCR_   = false;
 }
 
 int32_t BufferedInputStream::getChar() {
@@ -152,6 +158,9 @@ bool BufferedInputStream::eof() const {
 }
 
 bool BufferedInputStream::ensureData(size_t bytes) {
+    if (!buffer_ || bufferSize_ == 0) {
+        return false;
+    }
     // Invariant: cannot request more bytes than buffer size
     if (bytes > bufferSize_) {
         return false;  // Prevent infinite loop
@@ -296,6 +305,32 @@ void BufferedInputStream::detectEncoding() {
         // No BOM - default to UTF-8
         encoding_ = Encoding::UTF8_NO_BOM;
         bomSize_ = 0;
+    }
+}
+
+bool BufferedInputStream::isValid() const noexcept 
+{
+    // no need to check stream_.good() since it is not related to object validity, it is data state. 
+    return  buffer_ != nullptr && bufferSize_ > 0;
+}
+
+std::unique_ptr<BufferedInputStream> BufferedInputStream::Create(std::istream& stream,
+                            size_t bufferSize,
+                            StateError* err)
+{
+    if (bufferSize == 0) {
+        if (err) *err = StateError::ZeroBufferSize;
+        return nullptr;
+    }
+  
+    try {
+        auto p = std::unique_ptr<BufferedInputStream>(
+            new BufferedInputStream(stream, bufferSize));
+        if (err) *err = StateError::None;
+        return p;
+    } catch (const std::bad_alloc&) {
+        if (err) *err = StateError::OutOfMemory;
+        return nullptr;
     }
 }
 

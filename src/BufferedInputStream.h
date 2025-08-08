@@ -22,14 +22,20 @@ public:
         // Note: Currently only UTF-8 variants are implemented
     };
 
+    enum class StateError {
+        None,
+        ZeroBufferSize,
+        OutOfMemory,
+        IoError,
+    };
+
     // Character constants to avoid signed/unsigned comparison issues
     static constexpr uint8_t LF = 0x0A;      // \n
     static constexpr uint8_t CR = 0x0D;      // \r
     static constexpr uint8_t SPACE = 0x20;   // space
     static constexpr uint8_t TAB = 0x09;     // \t
 
-    BufferedInputStream(std::istream& stream, size_t bufferSize = 10 * 1024 * 1024);
-
+    static std::unique_ptr<BufferedInputStream> Create(std::istream& stream, size_t bufferSize, StateError* err = nullptr);
     // Delete copy operations
     BufferedInputStream(const BufferedInputStream&) = delete;
     BufferedInputStream& operator=(const BufferedInputStream&) = delete;
@@ -66,15 +72,17 @@ public:
     size_t getTotalBytesRead() const { return totalBytesRead_ - bomSize_; }
     Encoding getEncoding() const { return encoding_; }
 
+    bool isValid() const noexcept;
+
 private:
     bool ensureData(size_t bytes);
     void advance(size_t bytes);
     bool fillBuffer();
     void detectEncoding();
+    BufferedInputStream(std::istream& stream, size_t bufferSize = 10 * 1024 * 1024);
 
-private:
     std::istream& stream_;
-    const size_t bufferSize_;
+    size_t bufferSize_;
     std::unique_ptr<uint8_t[]> buffer_;
     size_t bufferPos_;
     size_t bufferEnd_;
@@ -109,7 +117,6 @@ bool BufferedInputStream::readWhile(std::string& out, Predicate pred) {
     
     return !out.empty();
 }
-
 
 } // namespace LXMLFormatter
 
