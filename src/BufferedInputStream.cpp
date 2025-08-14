@@ -13,9 +13,12 @@ BufferedInputStream::BufferedInputStream(std::istream& stream, size_t bufferSize
     , totalBytesRead_(0)
     , encoding_(Encoding::UTF8_NO_BOM)
     , bomSize_(0)
-    , hasPendingCR_(false) 
+    , hasPendingCR_(false)
+    , havePeek_(false)
+    , cachedCp_(-1)
+    , cachedWidth_(0) 
 {
-    fillBuffer();
+    fillInitialBuffer();
     detectEncoding();
 }
 
@@ -31,6 +34,9 @@ BufferedInputStream::BufferedInputStream(BufferedInputStream&& other) noexcept
     , encoding_(other.encoding_)
     , bomSize_(other.bomSize_)
     , hasPendingCR_(other.hasPendingCR_) 
+    , havePeek_(other.havePeek_)
+    , cachedCp_(other.cachedCp_)
+    , cachedWidth_(other.cachedWidth_) 
 {
     // Reset moved-from object
         other.buffer_.reset();
@@ -42,102 +48,64 @@ BufferedInputStream::BufferedInputStream(BufferedInputStream&& other) noexcept
         other.totalBytesRead_ = 0;
         other.bomSize_        = 0;
         other.hasPendingCR_   = false;
+        other.havePeek_       = false;
+        other.cachedCp_       = -1;
+        other.cachedWidth_    = 0;
 }
 
 int32_t BufferedInputStream::getChar() {
-    if (encoding_ != Encoding::UTF8 && encoding_ != Encoding::UTF8_NO_BOM) {
-        // For now, we only support UTF-8
-        // TODO: Add UTF-16/32 support
-        return -2;  // Encoding error
+    if (!isValid()) return -1;
+
+    if (havePeek_) {
+        havePeek_ = false;
+        const int32_t cp = cachedCp_;
+        advance(cachedWidth_);
+        return cp;
     }
 
-    if (!ensureData(1)) {
-        return -1;  // EOF
+    if (!ensureAtLeast(1)) return -1; // true EOF
+
+    auto r = UTF8Handler::decode(buffer_.get() + bufferPos_, available());
+    if (r.status == UTF8Handler::DecodeStatus::NeedMore) {
+        if (!ensureAtLeast(r.width)) return -1; // premature EOF
+        r = UTF8Handler::decode(buffer_.get() + bufferPos_, available());
+    }
+    if (r.status != UTF8Handler::DecodeStatus::Ok) {
+        // Policy: treat invalid sequences as EOF for now.
+        return -1;
     }
 
-    uint8_t first = buffer_[bufferPos_];
-    
-    // ASCII fast path
-    if (first < 0x80) {
-        advance(1);
-        // XML forbids NUL character
-        return (first == 0) ? -2 : first;
-    }
-
-    // Multi-byte UTF-8
-    int bytes = 0;
-    int32_t codepoint = 0;
-
-    if ((first & 0xE0) == 0xC0) {
-        bytes = 2;
-        codepoint = first & 0x1F;
-    } else if ((first & 0xF0) == 0xE0) {
-        bytes = 3;
-        codepoint = first & 0x0F;
-    } else if ((first & 0xF8) == 0xF0) {
-        bytes = 4;
-        codepoint = first & 0x07;
-    } else {
-        // Invalid UTF-8 start byte
-        advance(1);
-        return -2;  // Encoding error
-    }
-
-    if (!ensureData(bytes)) {
-        return -2;  // Incomplete sequence at EOF
-    }
-
-    // Validate and decode continuation bytes
-    constexpr uint8_t CONTINUATION_MASK = 0xC0;
-    constexpr uint8_t CONTINUATION_BITS = 0x80;
-    
-    for (int i = 1; i < bytes; i++) {
-        uint8_t byte = buffer_[bufferPos_ + i];
-        if ((byte & CONTINUATION_MASK) != CONTINUATION_BITS) {
-            // Invalid continuation byte
-            advance(1);
-            return -2;  // Encoding error
-        }
-        codepoint = (codepoint << 6) | (byte & 0x3F);
-    }
-
-    // Validate codepoint range and check for overlong sequences
-    if (codepoint > 0x10FFFF || (codepoint >= 0xD800 && codepoint <= 0xDFFF)) {
-        advance(1);
-        return -2;  // Invalid codepoint
-    }
-    
-    // Check for overlong sequences (security issue)
-    if ((bytes == 2 && codepoint < 0x80) ||
-        (bytes == 3 && codepoint < 0x800) ||
-        (bytes == 4 && codepoint < 0x10000)) {
-        advance(1);
-        return -2;  // Overlong sequence
-    }
-
-    advance(bytes);
-    return codepoint;
+    advance(r.width);
+    return r.cp;
 }
 
 int32_t BufferedInputStream::peekChar() {
-    size_t savedPos = bufferPos_;
-    size_t savedLine = currentLine_;
-    size_t savedColumn = currentColumn_;
-    size_t savedBytes = totalBytesRead_;
-    
-    int32_t ch = getChar();
-    
-    // Restore position
-    bufferPos_ = savedPos;
-    currentLine_ = savedLine;
-    currentColumn_ = savedColumn;
-    totalBytesRead_ = savedBytes;
-    
-    return ch;
+    if (!isValid()) return -1;
+    if (havePeek_)  return cachedCp_;
+
+    if (!ensureAtLeast(1)) return -1; // true EOF
+
+    auto r = UTF8Handler::decode(buffer_.get() + bufferPos_, available());
+    if (r.status == UTF8Handler::DecodeStatus::NeedMore) {
+        if (!ensureAtLeast(r.width)) return -1; // premature EOF
+        r = UTF8Handler::decode(buffer_.get() + bufferPos_, available());
+    }
+    if (r.status != UTF8Handler::DecodeStatus::Ok) {
+        // Policy: treat invalid sequences as EOF for now.
+        return -1;
+    }
+
+    cachedCp_    = r.cp;
+    cachedWidth_ = r.width;
+    havePeek_    = true;
+    return cachedCp_;
 }
 
-bool BufferedInputStream::readUntil(std::string& out, int32_t delimiter) {
-    return readWhile(out, [delimiter](int32_t ch) { return ch != delimiter; });
+void BufferedInputStream::readUntil(std::string& out, char delimiter) {
+    out.clear();
+    const int32_t d = static_cast<int32_t>(delimiter);
+    readWhile(out, [d](int32_t ch) { return ch != d; });
+    // delimiter (if present) remains unconsumed; caller can bis.getChar() to consume it.
 }
 
 void BufferedInputStream::skipWhitespace() {
@@ -157,155 +125,66 @@ bool BufferedInputStream::eof() const {
     return bufferPos_ >= bufferEnd_ && stream_.eof();
 }
 
-bool BufferedInputStream::ensureData(size_t bytes) {
-    if (!buffer_ || bufferSize_ == 0) {
-        return false;
-    }
-    // Invariant: cannot request more bytes than buffer size
-    if (bytes > bufferSize_) {
-        return false;  // Prevent infinite loop
-    }
-    
-    if (bufferPos_ + bytes <= bufferEnd_) {
-        return true;
-    }
-    
-    // Need to refill buffer
-    // Optimization: only move data if we've consumed more than 1/4 of buffer
-    // This reduces average copy size from bufferSize_/2 to bufferSize_/8
-    // For a 10MB buffer, this saves ~4MB of copying on average per refill
-    if (bufferPos_ > bufferSize_ / 4 && bufferEnd_ - bufferPos_ > 0) {
-        // Move remaining bytes to start
-        size_t remaining = bufferEnd_ - bufferPos_;
-        std::memmove(buffer_.get(), buffer_.get() + bufferPos_, remaining);
-        bufferEnd_ = remaining;
-        bufferPos_ = 0;
-    } else if (bufferPos_ >= bufferEnd_) {
-        // Buffer fully consumed
-        bufferPos_ = 0;
-        bufferEnd_ = 0;
-    }
-    // else: keep data where it is and read into remaining space
-    
-    // Fill available buffer space
-    size_t readPos = bufferEnd_;
-    size_t readSize = bufferSize_ - bufferEnd_;
-    
-    stream_.read(reinterpret_cast<char*>(buffer_.get() + readPos), readSize);
-    size_t bytesRead = stream_.gcount();
-    bufferEnd_ += bytesRead;
-    
-    return bufferPos_ + bytes <= bufferEnd_;
-}
+void BufferedInputStream::advance(std::size_t width) noexcept {
+    // Consumes 'width' bytes while maintaining CR/LF and line/column.
+    for (std::size_t i = 0; i < width; ++i) {
+        if (bufferPos_ >= bufferEnd_) break;
 
-void BufferedInputStream::advance(size_t bytes) {
-    size_t consumed = bytes;  // Track total bytes to consume
-    
-    for (size_t i = 0; i < consumed; i++) {
-        if (bufferPos_ < bufferEnd_) {
-            uint8_t c = buffer_[bufferPos_];
-            bufferPos_++;
-            totalBytesRead_++;
-            
-            // Handle pending CR from previous buffer
-            if (hasPendingCR_ && c == LF) {
-                // This LF completes a CR-LF pair; don't increment line again
+        const uint8_t ch = buffer_[bufferPos_++];
+        ++totalBytesRead_;
+
+        if (ch == '\r') {
+            ++currentLine_;
+            currentColumn_ = 1;
+            hasPendingCR_  = true;
+        } else if (ch == '\n') {
+            if (hasPendingCR_) {
+                // CRLF sequence: line already advanced on CR. keep column at 1.
                 hasPendingCR_ = false;
-                currentColumn_ = 1;
-                continue;
-            }
-            hasPendingCR_ = false;
-            
-            // Update line/column tracking
-            if (c == LF) {
-                currentLine_++;
-                currentColumn_ = 1;
-            } else if (c == CR) {
-                currentLine_++;
-                currentColumn_ = 1;
-                
-                // Check if next char is LF
-                if (bufferPos_ < bufferEnd_ && buffer_[bufferPos_] == LF) {
-                    // Consume the LF as part of CR-LF
-                    bufferPos_++;
-                    totalBytesRead_++;
-                    consumed++;  // Adjust total to account for extra byte
-                } else if (bufferPos_ >= bufferEnd_) {
-                    // CR at buffer boundary - need to check after refill
-                    hasPendingCR_ = true;
-                }
             } else {
-                // For UTF-8, only count the start of a character
-                constexpr uint8_t UTF8_CONTINUATION_MASK = 0xC0;
-                constexpr uint8_t UTF8_CONTINUATION_BITS = 0x80;
-                if ((c & UTF8_CONTINUATION_MASK) != UTF8_CONTINUATION_BITS) {
-                    currentColumn_++;
-                }
+                ++currentLine_;
+                currentColumn_ = 1;
             }
+        } else {
+            ++currentColumn_;
+            hasPendingCR_ = false;
         }
     }
 }
 
-bool BufferedInputStream::fillBuffer() {
-    if (!stream_.good()) {
-        return false;
-    }
+void BufferedInputStream::fillInitialBuffer() {
+    bufferPos_ = bufferEnd_ = 0;
+    if (!stream_) return;
 
-    stream_.read(reinterpret_cast<char*>(buffer_.get()), bufferSize_);
-    size_t bytesRead = stream_.gcount();
-    
-    if (bytesRead == 0) {
-        return false;
+    stream_.read(reinterpret_cast<char*>(buffer_.get()),
+                 static_cast<std::streamsize>(bufferSize_));
+    std::streamsize n = stream_.gcount();
+    if (n > 0) {
+        bufferPos_ = 0;
+        bufferEnd_ = static_cast<std::size_t>(n);
     }
-
-    bufferPos_ = 0;
-    bufferEnd_ = bytesRead;
-    return true;
 }
+
 
 void BufferedInputStream::detectEncoding() {
-    if (bufferEnd_ < 4) {
-        encoding_ = Encoding::UTF8_NO_BOM;  // Default
-        return;
-    }
+    // Only UTF-8/UTF-8 BOM supported; if BOM present, skip it.
+    if (bufferEnd_ - bufferPos_ >= 3) {
+        const uint8_t* p = buffer_.get() + bufferPos_;
+        if (p[0] == 0xEF && p[1] == 0xBB && p[2] == 0xBF) {
+            encoding_ = Encoding::UTF8;
+            bomSize_  = 3;
 
-    // BOM detection constants
-    constexpr uint8_t UTF8_BOM_1 = 0xEF;
-    constexpr uint8_t UTF8_BOM_2 = 0xBB;
-    constexpr uint8_t UTF8_BOM_3 = 0xBF;
-    constexpr uint8_t UTF16_BE_BOM_1 = 0xFE;
-    constexpr uint8_t UTF16_BE_BOM_2 = 0xFF;
-    constexpr uint8_t UTF16_LE_BOM_1 = 0xFF;
-    constexpr uint8_t UTF16_LE_BOM_2 = 0xFE;
+            // Skip BOM WITHOUT affecting line/column or CR state.
+            bufferPos_      += 3;
+            totalBytesRead_ += 3;
 
-    // Check for BOM
-    if (buffer_[0] == UTF8_BOM_1 && buffer_[1] == UTF8_BOM_2 && buffer_[2] == UTF8_BOM_3) {
-        encoding_ = Encoding::UTF8;
-        bomSize_ = 3;
-        bufferPos_ = 3;
-        totalBytesRead_ = 3;
-    } else if (buffer_[0] == UTF16_BE_BOM_1 && buffer_[1] == UTF16_BE_BOM_2) {
-        encoding_ = Encoding::UTF16_BE;
-        bomSize_ = 2;
-        bufferPos_ = 2;
-        totalBytesRead_ = 2;
-    } else if (buffer_[0] == UTF16_LE_BOM_1 && buffer_[1] == UTF16_LE_BOM_2) {
-        if (bufferEnd_ >= 4 && buffer_[2] == 0x00 && buffer_[3] == 0x00) {
-            encoding_ = Encoding::UTF32_LE;
-            bomSize_ = 4;
-            bufferPos_ = 4;
-            totalBytesRead_ = 4;
-        } else {
-            encoding_ = Encoding::UTF16_LE;
-            bomSize_ = 2;
-            bufferPos_ = 2;
-            totalBytesRead_ = 2;
-        }
-    } else {
-        // No BOM - default to UTF-8
-        encoding_ = Encoding::UTF8_NO_BOM;
-        bomSize_ = 0;
-    }
+            // Any previously cached peek is now stale.
+            havePeek_    = false;
+            cachedCp_    = -1;
+            cachedWidth_ = 0;
+            return;
+        }   
+    } 
 }
 
 bool BufferedInputStream::isValid() const noexcept 
@@ -333,5 +212,42 @@ std::unique_ptr<BufferedInputStream> BufferedInputStream::Create(std::istream& s
         return nullptr;
     }
 }
+
+bool BufferedInputStream::ensureAtLeast(std::size_t n)
+{
+    if (!isValid()) return false;
+    if (available() >= n) return true;
+
+    /* Compact existing unread bytes to the front if needed/possible.
+       Most OS reads want a single contiguous destination. If we keep the unread 
+       data in the middle of the buffer, there might be too little space at the 
+       tail to pull more bytes especially with small buffers so we’d be forced to
+       allocate/grow or to implement a ring buffer which we don't. ring buffer
+       makes every pointer arethmatics a two-step process (modulo buffer size).
+    */
+    if (bufferPos_ > 0 && bufferPos_ < bufferEnd_) {
+        const std::size_t unread = bufferEnd_ - bufferPos_;
+        std::memmove(buffer_.get(), buffer_.get() + bufferPos_, unread);
+        bufferPos_ = 0;
+        bufferEnd_ = unread;
+    } else if (bufferPos_ == bufferEnd_) {
+        bufferPos_ = bufferEnd_ = 0;
+    }
+
+    // Read until either enough bytes are available or no more data arrives.
+    while (available() < n) {
+        if (!stream_) break;
+        const std::size_t room = bufferSize_ - bufferEnd_;
+        if (room == 0) break; // no space left; caller asked for > bufferSize_
+        stream_.read(reinterpret_cast<char*>(buffer_.get() + bufferEnd_),
+                     static_cast<std::streamsize>(room));
+        const std::streamsize got = stream_.gcount();
+        if (got <= 0) break;
+        bufferEnd_ += static_cast<std::size_t>(got);
+    }
+
+    return available() >= n;
+}
+
 
 } // namespace LXMLFormatter
