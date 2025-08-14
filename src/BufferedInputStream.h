@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cstring>
 #include <cstdint>
+#include "UTF8Handler.h"
+
 
 namespace LXMLFormatter {
 
@@ -46,21 +48,22 @@ public:
     // Delete move assignment (can't reassign const members or references)
     BufferedInputStream& operator=(BufferedInputStream&&) = delete;
 
-    // Get next UTF-8 character 
+    // Reads the next Unicode scalar value as int32_t.
     // Returns: Unicode codepoint (>= 0), -1 for EOF, -2 for encoding error
     // Note: XML forbids NUL (U+0000), so we return -2 if encountered
     // Note: UTF8 and UTF8_NO_BOM are handled identically (BOM already consumed)
     int32_t getChar();
 
-    // Peek at next character without consuming
+    // Peeks the next code point without consuming it.
+    // Returns -1 on EOF.
     int32_t peekChar();
 
     // Read UTF-8 string until condition is met
     template<typename Predicate>
-    bool readWhile(std::string& out, Predicate pred);
+    void readWhile(std::string& out, Predicate pred);
 
     // Read until delimiter (delimiter not included)
-    bool readUntil(std::string& out, int32_t delimiter);
+    void readUntil(std::string& out, char delimiter);
 
     // Skip whitespace (Unicode-aware)
     void skipWhitespace();
@@ -72,14 +75,25 @@ public:
     size_t getTotalBytesRead() const { return totalBytesRead_ - bomSize_; }
     Encoding getEncoding() const { return encoding_; }
 
+    // Returns true if the instance has a live buffer and positive capacity.
     bool isValid() const noexcept;
-
+    
 private:
-    bool ensureData(size_t bytes);
-    void advance(size_t bytes);
-    bool fillBuffer();
-    void detectEncoding();
     BufferedInputStream(std::istream& stream, size_t bufferSize = 10 * 1024 * 1024);
+
+    // Number of bytes available from bufferPos_ to bufferEnd_.
+    inline std::size_t available() const noexcept { return bufferEnd_ - bufferPos_; }
+
+    // Refills/compacts so that at least n bytes are available at bufferPos_.
+    // Does not advance bufferPos_. Returns false on true EOF (no new bytes).
+    bool ensureAtLeast(std::size_t n);
+
+    // Advances bufferPos_ by 'width' bytes; updates line/column and CR/LF.
+    void advance(std::size_t width) noexcept;
+
+    // Initial read and BOM detection. Assumes buffer is empty on entry.
+    void fillInitialBuffer();
+    void detectEncoding();
 
     std::istream& stream_;
     size_t bufferSize_;
@@ -91,31 +105,50 @@ private:
     size_t totalBytesRead_;
     Encoding encoding_;
     size_t bomSize_;
-    bool hasPendingCR_;  // Track CR at buffer boundary for correct line counting
+    bool hasPendingCR_;    // Track CR at buffer boundary for correct line counting
+    bool    havePeek_;
+    int32_t cachedCp_;     // next code point
+    size_t  cachedWidth_;  // number of bytes it spans in the buffer
 };
 
 
 template<typename Predicate>
-bool BufferedInputStream::readWhile(std::string& out, Predicate pred) {
-    out.clear();
-    
-    while (true) {
-        int32_t ch = peekChar();
-        if (ch < 0 || !pred(ch)) {  // EOF or error stops reading
-            break;
+void BufferedInputStream::readWhile(std::string& out, Predicate pred) {
+    if (!isValid()) return;
+
+    for (;;) {
+        if (bufferPos_ == bufferEnd_) {
+            if (!ensureAtLeast(1)) break; // true EOF
         }
-        
-        // Actually consume the character and append its UTF-8 bytes
-        size_t startPos = bufferPos_;
-        getChar();
-        size_t endPos = bufferPos_;
-        
-        for (size_t i = startPos; i < endPos; i++) {
-            out.push_back(static_cast<char>(buffer_[i]));
+
+        // Remember start of contiguous window in the current buffer snapshot.
+        const std::size_t start = bufferPos_;
+
+        // Consume as long as predicate accepts the decoded code points,
+        // but do not cross a refill boundary inside this inner loop.
+        while (bufferPos_ < bufferEnd_) {
+            auto r = UTF8Handler::decode(buffer_.get() + bufferPos_, available());
+            if (r.status == UTF8Handler::DecodeStatus::NeedMore) break;         // refill outside
+            if (r.status != UTF8Handler::DecodeStatus::Ok) break;               // stop on invalid
+            if (!pred(r.cp)) break;                                // stop when predicate fails
+            advance(r.width);                                      // consume bytes and update position
+        }
+
+        // Append what was consumed in this window.
+        out.append(reinterpret_cast<const char*>(buffer_.get() + start),
+                    static_cast<std::size_t>(bufferPos_ - start));
+
+        // If we stopped because predicate failed or an invalid sequence was seen, exit.
+        if (bufferPos_ < bufferEnd_) {
+            auto r2 = UTF8Handler::decode(buffer_.get() + bufferPos_, available());
+            if (r2.status == UTF8Handler::DecodeStatus::Ok && !pred(r2.cp)) break;
+            if (r2.status == UTF8Handler::DecodeStatus::Invalid) break;
+            // Otherwise r2 == NeedMore -> outer loop will refill.
+        } else {
+            // Buffer exhausted; loop will attempt to refill.
+            continue;
         }
     }
-    
-    return !out.empty();
 }
 
 } // namespace LXMLFormatter
