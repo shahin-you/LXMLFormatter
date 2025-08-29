@@ -1,5 +1,76 @@
 #include "UnitTestFramework.h"
 #include "BufferedInputStream.h"
+#include <limits>
+
+TEST_CASE(Factory_Create_EdgeCases){
+    using BIS = LXMLFormatter::BufferedInputStream;
+    using S   = BIS::StateError;
+
+    // --- Zero buffer size -> nullptr + ZeroBufferSize
+    {
+        std::istringstream in("X");
+        S err = S::None;
+        auto p = BIS::Create(in, 0, &err);
+        REQUIRE(!p);
+        REQUIRE(err == S::ZeroBufferSize);
+    }
+
+    // --- Too small (1..3) -> nullptr + BufferTooSmall
+    for (std::size_t sz = 1; sz < 4; ++sz) {
+        std::istringstream in("X");
+        S err = S::None;
+        auto p = BIS::Create(in, sz, &err);
+        REQUIRE(!p);
+        REQUIRE(err == S::BufferTooSmall);
+    }
+
+    // --- Minimum valid size (4) -> non-null + None; object usable
+    {
+        std::istringstream in("ab");
+        S err = S::BufferTooSmall; // prime with non-None to ensure it gets reset
+        auto p = BIS::Create(in, 4, &err);
+        REQUIRE(p);
+        REQUIRE(err == S::None);
+        REQUIRE_EQ(p->getChar(), 'a');
+        REQUIRE_EQ(p->getChar(), 'b');
+        REQUIRE_EQ(p->getChar(), -1);
+    }
+
+    // --- Larger valid size -> non-null + None; still usable
+    {
+        std::istringstream in("hi");
+        S err = S::None;
+        auto p = BIS::Create(in, 4096, &err);
+        REQUIRE(p);
+        REQUIRE(err == S::None);
+        REQUIRE_EQ(p->getChar(), 'h');
+        REQUIRE_EQ(p->getChar(), 'i');
+        REQUIRE_EQ(p->getChar(), -1);
+    }
+
+    // --- Null error pointer: should still return nullptr on invalid size without crashing
+    {
+        std::istringstream in("X");
+        auto p = BIS::Create(in, 0, nullptr);
+        REQUIRE(!p);
+    }
+    {
+        std::istringstream in("X");
+        auto p = BIS::Create(in, 4, nullptr);
+        REQUIRE(p);
+    }
+
+    // --- Best-effort OutOfMemory: request an absurdly large buffer
+    // Note: new[] should throw (bad_alloc / bad_array_new_length), which is mapped to OutOfMemory.
+    {
+        std::istringstream in(""); // data content irrelevant here
+        S err = S::None;
+        const std::size_t huge = std::numeric_limits<std::size_t>::max() / 2;
+        auto p = BIS::Create(in, huge, &err);
+        REQUIRE(!p);
+        REQUIRE(err == S::OutOfMemory);
+    }
+}
 
 TEST_CASE(ReadAscii) {
     std::istringstream in("abc");
@@ -83,7 +154,7 @@ TEST_CASE(LineColumnTracking) {
 
 TEST_CASE(PeekCRLFStateRegression) {
     std::istringstream in("A\r\nB");
-    auto bis = LXMLFormatter::BufferedInputStream::Create(in, 2); // tiny buffer forces boundary crossing
+    auto bis = LXMLFormatter::BufferedInputStream::Create(in, 4);
 
     REQUIRE_NE(bis, nullptr);
     if (!bis) {
@@ -103,7 +174,7 @@ TEST_CASE(PeekCRLFStateRegression) {
     REQUIRE_EQ(bis->getCurrentColumn(),1u);
 
     REQUIRE_EQ(bis->getChar(),'\n');                  // now actually consume LF
-    REQUIRE_EQ(bis->getCurrentLine(),3u);             // line must increment *once*
+    REQUIRE_EQ(bis->getCurrentLine(),2u);             // line must increment *once*
     REQUIRE_EQ(bis->getCurrentColumn(),1u);
 
     REQUIRE_EQ(bis->getChar(),'B');                    // final char
@@ -126,7 +197,7 @@ TEST_CASE(ReadWhileCompactionRegression) {
 
 TEST_CASE(PeekDoesNotConsumeRegression) {
     std::istringstream in("Z");
-    auto bis = LXMLFormatter::BufferedInputStream::Create(in, 1);
+    auto bis = LXMLFormatter::BufferedInputStream::Create(in, 4);
 
     REQUIRE_NE(bis, nullptr);
     if (!bis) {
@@ -140,7 +211,7 @@ TEST_CASE(PeekDoesNotConsumeRegression) {
 
 TEST_CASE(SingleByteBufferASCII) {
     std::istringstream in("hello");
-    auto bis = LXMLFormatter::BufferedInputStream::Create(in, 1);
+    auto bis = LXMLFormatter::BufferedInputStream::Create(in, 4);
 
     REQUIRE_NE(bis, nullptr);
     if (!bis) {
@@ -151,17 +222,25 @@ TEST_CASE(SingleByteBufferASCII) {
     REQUIRE_EQ(out,"hello");
 }
 
-TEST_CASE(SingleByteBufferUTF8) {
-    std::string s = u8"π";                // two‑byte UTF‑8 char
+TEST_CASE(MultibyteLeadAtBufferEndCompactionWorks){
+    // Content crafted so after consuming 'X','Y', the 'π' lead byte is last in the window.
+    std::string s = std::string("XY") + u8"π" + "Z"; // 'π' = 2 bytes
     std::istringstream in(s);
-    auto bis = LXMLFormatter::BufferedInputStream::Create(in, 1); // force boundary in middle of codepoint
+    auto bis = LXMLFormatter::BufferedInputStream::Create(in, 4);
 
     REQUIRE_NE(bis, nullptr);
     if (!bis) {
         return;
     }
-    REQUIRE_EQ(bis->getChar(),0x03C0);     // π decoded correctly
-    REQUIRE_EQ(bis->getChar(),-1);
+
+    REQUIRE_EQ(bis->getChar(), 'X');
+    REQUIRE_EQ(bis->getChar(), 'Y');
+
+    // Now the buffer likely ends on the lead byte of 'π'.
+    REQUIRE_EQ(bis->peekChar(), 0x03C0);    // must succeed: compaction + one more read
+    REQUIRE_EQ(bis->getChar(), 0x03C0);     // then consume it
+    REQUIRE_EQ(bis->getChar(), 'Z');
+    REQUIRE_EQ(bis->getChar(), -1);
 }
 
 TEST_CASE(LargeBufferSmallInput) {
@@ -178,18 +257,9 @@ TEST_CASE(LargeBufferSmallInput) {
     REQUIRE_EQ(out, text);
 }
 
-TEST_CASE(ZeroBufferSizeConstructor) {
-    std::istringstream in("data");
-    LXMLFormatter::BufferedInputStream::StateError err;
-    auto bis = LXMLFormatter::BufferedInputStream::Create(in, 0, &err); 
-    REQUIRE_EQ(bis, nullptr);
-    REQUIRE_EQ(err, LXMLFormatter::BufferedInputStream::StateError::ZeroBufferSize);
-}
-
-
 TEST_CASE(MoveCtorPreservesState) {
     std::istringstream in("A\nB");
-    auto p = LXMLFormatter::BufferedInputStream::Create(in, 2);
+    auto p = LXMLFormatter::BufferedInputStream::Create(in, 4);
     REQUIRE(p);
     if (!p) {
         return;
@@ -212,7 +282,7 @@ TEST_CASE(MoveCtorPreservesState) {
 
 TEST_CASE(MovedFromActsAsEOFEverywhere) {
     std::istringstream in("123");
-    auto p = LXMLFormatter::BufferedInputStream::Create(in, 2);
+    auto p = LXMLFormatter::BufferedInputStream::Create(in, 4);
     REQUIRE(p);
 
     LXMLFormatter::BufferedInputStream moved(std::move(*p));

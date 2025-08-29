@@ -201,7 +201,18 @@ std::unique_ptr<BufferedInputStream> BufferedInputStream::Create(std::istream& s
         if (err) *err = StateError::ZeroBufferSize;
         return nullptr;
     }
-  
+
+    if (bufferSize < 4) { // Buffer must be at least 4 bytes so we can read a full UTF-8 character
+        if (err) *err = StateError::BufferTooSmall;
+        return nullptr;
+    }
+
+    //we can't trust tr/catch to catch huge allocations since ASan would catch them before any new happens
+    if (bufferSize > kMaxBufferSize) {
+        if (err) *err = StateError::OutOfMemory;
+        return nullptr;
+    }
+
     try {
         auto p = std::unique_ptr<BufferedInputStream>(
             new BufferedInputStream(stream, bufferSize));
