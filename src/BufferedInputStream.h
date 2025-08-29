@@ -27,6 +27,7 @@ public:
     enum class StateError {
         None,
         ZeroBufferSize,
+        BufferTooSmall,
         OutOfMemory,
         IoError,
     };
@@ -36,6 +37,7 @@ public:
     static constexpr uint8_t CR = 0x0D;      // \r
     static constexpr uint8_t SPACE = 0x20;   // space
     static constexpr uint8_t TAB = 0x09;     // \t
+    static constexpr std::size_t kMaxBufferSize = (1ull << 28); //256MB buffer cap
 
     static std::unique_ptr<BufferedInputStream> Create(std::istream& stream, size_t bufferSize, StateError* err = nullptr);
     // Delete copy operations
