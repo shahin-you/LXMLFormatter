@@ -28,8 +28,7 @@ public:
         None,
         ZeroBufferSize,
         BufferTooSmall,
-        OutOfMemory,
-        IoError,
+        OutOfMemory
     };
 
     // Character constants to avoid signed/unsigned comparison issues
@@ -51,8 +50,8 @@ public:
     BufferedInputStream& operator=(BufferedInputStream&&) = delete;
 
     // Reads the next Unicode scalar value as int32_t.
-    // Returns: Unicode codepoint (>= 0), -1 for EOF, -2 for encoding error
-    // Note: XML forbids NUL (U+0000), so we return -2 if encountered
+    // Returns: Unicode codepoint (>= 0)
+    //          treats any invalid sequence as EOF (-1)
     // Note: UTF8 and UTF8_NO_BOM are handled identically (BOM already consumed)
     int32_t getChar();
 
