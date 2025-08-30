@@ -67,7 +67,8 @@ int32_t BufferedInputStream::getChar() {
 
     auto r = UTF8Handler::decode(buffer_.get() + bufferPos_, available());
     if (r.status == UTF8Handler::DecodeStatus::NeedMore) {
-        if (!ensureAtLeast(r.width)) return -1; // premature EOF
+        if (!ensureAtLeast(r.width)) 
+            return -1; // premature EOF
         r = UTF8Handler::decode(buffer_.get() + bufferPos_, available());
     }
     if (r.status != UTF8Handler::DecodeStatus::Ok) {
@@ -122,7 +123,7 @@ void BufferedInputStream::skipWhitespace() {
 }
 
 bool BufferedInputStream::eof() const {
-    return bufferPos_ >= bufferEnd_ && stream_.eof();
+    return available()==0 && stream_.eof();
 }
 
 void BufferedInputStream::advance(std::size_t width) noexcept {
@@ -207,7 +208,7 @@ std::unique_ptr<BufferedInputStream> BufferedInputStream::Create(std::istream& s
         return nullptr;
     }
 
-    //we can't trust tr/catch to catch huge allocations since ASan would catch them before any new happens
+    //we can't trust try/catch to catch huge allocations since ASan would catch them before any new happens
     if (bufferSize > kMaxBufferSize) {
         if (err) *err = StateError::OutOfMemory;
         return nullptr;
@@ -234,7 +235,7 @@ bool BufferedInputStream::ensureAtLeast(std::size_t n)
        data in the middle of the buffer, there might be too little space at the 
        tail to pull more bytes especially with small buffers so we’d be forced to
        allocate/grow or to implement a ring buffer which we don't. ring buffer
-       makes every pointer arethmatics a two-step process (modulo buffer size).
+       makes every pointer math a two-step process (modulo buffer size).
     */
     if (bufferPos_ > 0 && bufferPos_ < bufferEnd_) {
         const std::size_t unread = bufferEnd_ - bufferPos_;
