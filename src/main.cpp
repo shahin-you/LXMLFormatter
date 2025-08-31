@@ -7,6 +7,7 @@
 */
 
 #include "BufferedInputStream.h"
+#include "XMLTokenizerTypes.h"
 #include <iostream>
 
 int main() {
