@@ -199,6 +199,7 @@ struct TokenizerLimits {
     // DoS guards tied to tag arena
     U16     maxAttrsPerElement  = 1024;
     ByteLen maxPerTagBytes      = 8u * 1024u * 1024u; // pre-reserved/fixed tag buffer
+    U16     maxOpenDepth        = 1024;               // maximum nesting depth
 };
 
 //-------------------------------
