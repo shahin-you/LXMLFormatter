@@ -204,39 +204,13 @@ TEST_CASE(UTF8Handler_WidthMatchesSequenceLengthOnOk) {
 }
 
 //--advanced tests--//
-static inline int fastRefEncode(uint32_t cp, uint8_t out[4]) {
-    if (cp <= 0x7F) {
-        out[0] = static_cast<uint8_t>(cp);
-        return 1;
-    }
-    if (cp <= 0x7FF) {
-        out[0] = static_cast<uint8_t>(0xC0 | (cp >> 6));
-        out[1] = static_cast<uint8_t>(0x80 | (cp & 0x3F));
-        return 2;
-    }
-    if (cp >= 0xD800 && cp <= 0xDFFF) return 0; // surrogates invalid
-    if (cp <= 0xFFFF) {
-        out[0] = static_cast<uint8_t>(0xE0 | (cp >> 12));
-        out[1] = static_cast<uint8_t>(0x80 | ((cp >> 6) & 0x3F));
-        out[2] = static_cast<uint8_t>(0x80 | (cp & 0x3F));
-        return 3;
-    }
-    if (cp <= 0x10FFFF) {
-        out[0] = static_cast<uint8_t>(0xF0 | (cp >> 18));
-        out[1] = static_cast<uint8_t>(0x80 | ((cp >> 12) & 0x3F));
-        out[2] = static_cast<uint8_t>(0x80 | ((cp >> 6) & 0x3F));
-        out[3] = static_cast<uint8_t>(0x80 | (cp & 0x3F));
-        return 4;
-    }
-    return 0;
-}
-
 static std::vector<uint8_t> refEncode(uint32_t cp) {
     uint8_t buf[4];
-    int len = fastRefEncode(cp, buf);   // 0 if invalid (surrogate/out of range)
-    if (len == 0) 
-        return {};
-    return std::vector<uint8_t>(buf, buf + len);
+    auto result = UTF8Handler::encode(cp, buf, 4); // to ensure consistency
+    if (result.status == UTF8Handler::EncodeStatus::Ok)
+        return std::vector<uint8_t>(buf, buf + result.width);
+
+    return {};
 }
 
 static void expectOkRoundtrip(uint32_t cp) {
@@ -682,8 +656,9 @@ TEST_CASE(UTF8Handler_Exhaustive_RoundTrip_AllValidScalars) {
         if (cp >= 0xD800 && cp <= 0xDFFF) 
             continue;
 
-        const int len = fastRefEncode(cp, buf);
-        REQUIRE(len != 0);
+        auto enc = UTF8Handler::encode(cp, buf, 4); // to ensure consistency with reference
+        const int len = enc.width;
+        REQUIRE_EQ(enc.status , UTF8Handler::EncodeStatus::Ok);
 
         auto r = UTF8Handler::decode(buf, static_cast<std::size_t>(len));
         if (r.status != S::Ok || 
@@ -707,8 +682,9 @@ TEST_CASE(UTF8Handler_Exhaustive_Truncations_NeedMore_WithCorrectWidth) {
     for (uint32_t cp = 0; cp <= 0x10FFFF; ++cp) {
         if (cp >= 0xD800 && cp <= 0xDFFF) continue;
 
-        const int len = fastRefEncode(cp, buf);
-        REQUIRE(len != 0);
+        auto enc = UTF8Handler::encode(cp, buf, 4); // to ensure consistency with reference
+        const int len = enc.width;
+        REQUIRE_EQ(enc.status , UTF8Handler::EncodeStatus::Ok);
 
         if (len == 1) 
             continue; // No truncation case for ASCII
@@ -924,8 +900,12 @@ TEST_CASE(UTF8Handler_Fuzz_RandomFullBuffer) {
             REQUIRE(cp2 != 0xFFFFFFFFu);
             REQUIRE_EQ(r.cp, cp2);
 
-            uint8_t re[4]; int rl = fastRefEncode(r.cp, re);
-            REQUIRE_EQ(rl, w);
+            uint8_t re[4]; 
+            auto enc = UTF8Handler::encode(r.cp, re, 4); // to ensure consistency with reference
+            REQUIRE_EQ(enc.status , UTF8Handler::EncodeStatus::Ok);
+
+
+            REQUIRE_EQ(enc.width, w);
             for (int i = 0; i < w; ++i) {
                 REQUIRE_EQ(re[i], buf[i]);
             }
@@ -985,10 +965,157 @@ TEST_CASE(UTF8Handler_Fuzz_RandomPartialAvailability) {
             REQUIRE(cp2 != 0xFFFFFFFFu);
             REQUIRE_EQ(r.cp, cp2);
 
-            uint8_t re[4]; int rl = fastRefEncode(r.cp, re);
-            REQUIRE_EQ(rl, w);
+            uint8_t re[4];
+            auto enc = UTF8Handler::encode(r.cp, re, 4); // to ensure consistency with reference 
+            REQUIRE_EQ(enc.status , UTF8Handler::EncodeStatus::Ok);
+            REQUIRE_EQ(enc.width, w);
             for (int i = 0; i < w; ++i)
                 REQUIRE_EQ(re[i], buf[i]);
         }
+    }
+}
+
+//--- encode tests ---//
+static void expect_bytes(const uint8_t* got, int n, std::initializer_list<uint8_t> exp) {
+    int i = 0;
+    for (auto b : exp) {
+        REQUIRE(i < n);
+        REQUIRE_EQ(got[i], b);
+        ++i;
+    }
+    REQUIRE_EQ(i, n);
+}
+
+TEST_CASE(UTF8_Encode_ASCII_OneByte) {
+    uint8_t out[4]{};
+    auto er = UTF8Handler::encode(0x41, out); // 'A'
+    REQUIRE_EQ(er.status, UTF8Handler::EncodeStatus::Ok);
+    REQUIRE_EQ(er.width, 1);
+    expect_bytes(out, er.width, {0x41});
+
+    // round-trip
+    auto dr = UTF8Handler::decode(out, er.width);
+    REQUIRE_EQ(dr.status, UTF8Handler::DecodeStatus::Ok);
+    REQUIRE_EQ(dr.width, 1);
+    REQUIRE_EQ(dr.cp, 0x41u);
+}
+
+TEST_CASE(UTF8_Encode_TwoByte) {
+    uint8_t out[4]{};
+    auto er = UTF8Handler::encode(0x00A9, out); // ©
+    REQUIRE_EQ(er.status, UTF8Handler::EncodeStatus::Ok);
+    REQUIRE_EQ(er.width, 2);
+    expect_bytes(out, er.width, {0xC2, 0xA9});
+
+    auto dr = UTF8Handler::decode(out, er.width);
+    REQUIRE_EQ(dr.status, UTF8Handler::DecodeStatus::Ok);
+    REQUIRE_EQ(dr.cp, 0x00A9u);
+}
+
+TEST_CASE(UTF8_Encode_ThreeByte) {
+    uint8_t out[4]{};
+    auto er = UTF8Handler::encode(0x20AC, out); // €
+    REQUIRE_EQ(er.status, UTF8Handler::EncodeStatus::Ok);
+    REQUIRE_EQ(er.width, 3);
+    expect_bytes(out, er.width, {0xE2, 0x82, 0xAC});
+
+    auto dr = UTF8Handler::decode(out, er.width);
+    REQUIRE_EQ(dr.status, UTF8Handler::DecodeStatus::Ok);
+    REQUIRE_EQ(dr.cp, 0x20ACu);
+}
+
+TEST_CASE(UTF8_Encode_FourByte) {
+    uint8_t out[4]{};
+    auto er = UTF8Handler::encode(0x1F600, out); // 😀
+    REQUIRE_EQ(er.status, UTF8Handler::EncodeStatus::Ok);
+    REQUIRE_EQ(er.width, 4);
+    expect_bytes(out, er.width, {0xF0, 0x9F, 0x98, 0x80});
+
+    auto dr = UTF8Handler::decode(out, er.width);
+    REQUIRE_EQ(dr.status, UTF8Handler::DecodeStatus::Ok);
+    REQUIRE_EQ(dr.cp, 0x1F600u);
+}
+
+TEST_CASE(UTF8_Encode_Boundaries) {
+    uint8_t out[4]{};
+
+    auto e1 = UTF8Handler::encode(0x007F, out); // max 1-byte
+    REQUIRE_EQ(e1.status, UTF8Handler::EncodeStatus::Ok);
+    REQUIRE_EQ(e1.width, 1);
+
+    auto e2 = UTF8Handler::encode(0x0080, out); // min 2-byte
+    REQUIRE_EQ(e2.status, UTF8Handler::EncodeStatus::Ok);
+    REQUIRE_EQ(e2.width, 2);
+
+    auto e3 = UTF8Handler::encode(0x07FF, out); // max 2-byte
+    REQUIRE_EQ(e3.status, UTF8Handler::EncodeStatus::Ok);
+    REQUIRE_EQ(e3.width, 2);
+
+    auto e4 = UTF8Handler::encode(0x0800, out); // min 3-byte
+    REQUIRE_EQ(e4.status, UTF8Handler::EncodeStatus::Ok);
+    REQUIRE_EQ(e4.width, 3);
+
+    auto e5 = UTF8Handler::encode(0xFFFF, out); // max 3-byte (non-surrogate)
+    REQUIRE_EQ(e5.status, UTF8Handler::EncodeStatus::Ok);
+    REQUIRE_EQ(e5.width, 3);
+
+    auto e6 = UTF8Handler::encode(0x10000, out); // min 4-byte
+    REQUIRE_EQ(e6.status, UTF8Handler::EncodeStatus::Ok);
+    REQUIRE_EQ(e6.width, 4);
+
+    auto e7 = UTF8Handler::encode(0x10FFFF, out); // max valid scalar
+    REQUIRE_EQ(e7.status, UTF8Handler::EncodeStatus::Ok);
+    REQUIRE_EQ(e7.width, 4);
+}
+
+TEST_CASE(UTF8_Encode_Reject_Surrogates) {
+    uint8_t out[4]{};
+    auto lo = UTF8Handler::encode(0xD800, out);
+    REQUIRE_EQ(lo.status, UTF8Handler::EncodeStatus::Invalid);
+
+    auto hi = UTF8Handler::encode(0xDFFF, out);
+    REQUIRE_EQ(hi.status, UTF8Handler::EncodeStatus::Invalid);
+}
+
+TEST_CASE(UTF8_Encode_Reject_AboveUnicodeMax) {
+    uint8_t out[4]{};
+    auto er = UTF8Handler::encode(0x110000, out); // > U+10FFFF
+    REQUIRE_EQ(er.status, UTF8Handler::EncodeStatus::Invalid);
+}
+
+TEST_CASE(UTF8_Encode_BoundedBuffer_NeedMore) {
+    uint8_t out[2]{};
+
+    // 2-byte codepoint into 1-byte buffer → NeedMore(2)
+    auto e2 = UTF8Handler::encode(0x00A9, out, 1);
+    REQUIRE_EQ(e2.status, UTF8Handler::EncodeStatus::NeedMore);
+    REQUIRE_EQ(e2.width, 2);
+
+    // 3-byte into 2-byte buffer → NeedMore(3)
+    auto e3 = UTF8Handler::encode(0x20AC, out, 2);
+    REQUIRE_EQ(e3.status, UTF8Handler::EncodeStatus::NeedMore);
+    REQUIRE_EQ(e3.width, 3);
+
+    // 4-byte into 3-byte buffer → NeedMore(4)
+    uint8_t out3[3]{};
+    auto e4 = UTF8Handler::encode(0x1F600, out3, 3);
+    REQUIRE_EQ(e4.status, UTF8Handler::EncodeStatus::NeedMore);
+    REQUIRE_EQ(e4.width, 4);
+}
+
+TEST_CASE(UTF8_Encode_RoundTrip_Sweep) {
+    // A small sweep across ranges to catch regressions
+    const uint32_t cps[] = {
+        0x0000, 0x0024, 0x007F, 0x0080, 0x07FF,
+        0x0800, 0x20AC, 0xD7FF, 0xE000, 0xFFFF,
+        0x10000, 0x10FFFF
+    };
+    for (uint32_t cp : cps) {
+        uint8_t enc[4]{};
+        auto er = UTF8Handler::encode(cp, enc);
+        REQUIRE_EQ(er.status, UTF8Handler::EncodeStatus::Ok);
+        auto dr = UTF8Handler::decode(enc, er.width);
+        REQUIRE_EQ(dr.status, UTF8Handler::DecodeStatus::Ok);
+        REQUIRE_EQ(dr.cp, cp);
     }
 }
