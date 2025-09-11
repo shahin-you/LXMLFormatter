@@ -106,6 +106,17 @@ public:
         DecodeStatus status = DecodeStatus::Invalid;
     };
     
+    enum class EncodeStatus {
+        Ok,
+        NeedMore,  // out buffer too small; width = required bytes
+        Invalid    // cp is not a Unicode scalar value
+    };
+
+    struct EncodeResult {
+        uint8_t     width = 0;               // bytes written (or needed if NeedMore)
+        EncodeStatus status = EncodeStatus::Invalid;
+    };
+
     // Static decoder - no state needed
     [[nodiscard]] static DecodeResult decode(const uint8_t* p, std::size_t avail) noexcept;
     
@@ -114,6 +125,16 @@ public:
         if (offset >= size) return DecodeResult{0, 1, DecodeStatus::NeedMore};
         return decode(buffer + offset, size - offset);
     }
+
+    /// Encode one Unicode scalar value to UTF-8 into a bounded buffer.
+    /// Returns {Ok,width} on success; {NeedMore,required} if 'avail' is too small.
+    /// {Invalid,1} for invalid cp (surrogates or > U+10FFFF).
+    [[nodiscard]] static EncodeResult encode(uint32_t cp, uint8_t* out, std::size_t avail) noexcept;
+
+    /// Convenience overload for a 4-byte scratch buffer (always enough space).
+    [[nodiscard]] static EncodeResult encode(uint32_t cp, uint8_t out[4]) noexcept {
+        return encode(cp, out, 4);
+    }    
     
 private:        
     alignas(64) static inline const std::array<ShUTF8Detail::Utf8Info, 256> utf8_table = ShUTF8Detail::generate_table();
@@ -259,6 +280,62 @@ inline UTF8Handler::DecodeResult UTF8Handler::decode(const uint8_t* p, std::size
     result.width = info.bytes;
     result.status = DecodeStatus::Ok;
     return result;
+}
+
+inline UTF8Handler::EncodeResult UTF8Handler::encode(uint32_t cp, uint8_t* out, std::size_t avail) noexcept {
+    EncodeResult res;
+
+    // Validate Unicode scalar value (no surrogates; <= U+10FFFF).
+    // Reuses the class’ surrogate check for consistency.
+    if (UNLIKELY(!check_surrogates(cp) || cp > 0x10FFFFu)) {
+        res.status = EncodeStatus::Invalid;
+        res.width  = 1;                 // mirror decoder: width=1 on Invalid
+        return res;
+    }
+
+    // Compute required width.
+    uint8_t need;
+    if (cp <= 0x7Fu) {
+        need = 1;
+    } else if (cp <= 0x7FFu) {
+        need = 2;
+    } else if (cp <= 0xFFFFu) {
+        need = 3;
+    } else {
+        need = 4;
+    }
+
+    if (UNLIKELY(avail < need)) {
+        res.status = EncodeStatus::NeedMore;
+        res.width  = need;              // report required size
+        return res;
+    }
+
+    // Encode shortest form.
+    switch (need) {
+    case 1:
+        out[0] = static_cast<uint8_t>(cp);
+        break;
+    case 2:
+        out[0] = static_cast<uint8_t>(0xC0u | (cp >> 6));
+        out[1] = static_cast<uint8_t>(0x80u | (cp & 0x3Fu));
+        break;
+    case 3:
+        out[0] = static_cast<uint8_t>(0xE0u | (cp >> 12));
+        out[1] = static_cast<uint8_t>(0x80u | ((cp >> 6) & 0x3Fu));
+        out[2] = static_cast<uint8_t>(0x80u | (cp & 0x3Fu));
+        break;
+    default: // 4
+        out[0] = static_cast<uint8_t>(0xF0u | (cp >> 18));
+        out[1] = static_cast<uint8_t>(0x80u | ((cp >> 12) & 0x3Fu));
+        out[2] = static_cast<uint8_t>(0x80u | ((cp >> 6)  & 0x3Fu));
+        out[3] = static_cast<uint8_t>(0x80u | (cp & 0x3Fu));
+        break;
+    }
+
+    res.status = EncodeStatus::Ok;
+    res.width  = need;
+    return res;
 }
 
 #undef LIKELY
