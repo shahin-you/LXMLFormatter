@@ -37,6 +37,7 @@
 #include <vector>
 #include <memory>
 #include <array>
+#include <string_view>
 
 namespace LXMLFormatter {
 
@@ -151,11 +152,10 @@ static_assert(sizeof(ErrorSeverity) == 1, "ErrorSeverity must be uint8_t-sized")
 struct TokenizerError {
     TokenizerErrorCode  code = TokenizerErrorCode::None;
     ErrorSeverity       sev  = ErrorSeverity::Recoverable;
-    U8                  _rsv = 0;               // align
-    SourcePosition      where{};                // where it happened
-    const char*        msg = nullptr;           // stable C-string (error arena)
-    ByteLen            msgLen = 0;              // bytes in msg
+    SourcePosition      where;
+    std::string_view    msg;
 };
+
 
 // -------------------------------
 // Options & limits
