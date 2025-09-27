@@ -208,3 +208,8 @@ int main() {
     }
 }
 ```
+
+Security notes
+--------------
+This library uses char * internally for speed and deterministic `noexcept` behavior and `std::string_view` is exposed
+for API calls.

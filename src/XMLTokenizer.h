@@ -44,6 +44,13 @@ public:
     // Reset tokenizer to initial state (keeps same stream, options, and limits).
     void reset() noexcept;
 
+    // Error helper
+    bool emitError(XMLToken& out,
+                   TokenizerErrorCode code,
+                   ErrorSeverity sev,
+                   const char* msg,
+                   U32 msgLen) noexcept;
+
 private:
     // --- Core wiring ---
     BufferedInputStream& in_;
@@ -75,7 +82,7 @@ private:
     // Separate arena for text content (ephemeral between tokens)
     TextArena textArena_;
     
-    // Single-slot lookahead buffer (optional future feature)
+    // Single-slot lookahead buffer (future feature)
     LookaheadSlot la_;
 
     // Errors accumulated during parsing
@@ -84,13 +91,14 @@ private:
     // Error message arena (stable storage for TokenizerError.msg)
     std::vector<char> errorArena_;
 
-    // Optional freelist for TagBuffer reuse (minimize allocations)
+    // freelist for TagBuffer reuse (minimize allocations)
     // Invariant: all entries are exactly freelistBlockSize_ bytes
     std::vector<std::unique_ptr<char[]>> tagBufFreelist_;
     ByteLen freelistBlockSize_ = 0;  // Track freelist buffer size for invalidation
     
     // Token start position tracking
     SourcePosition pendingStart_{};  // Captured at start of each token
+    bool pendingStartValid_ = false; // true iff markTokenStart() captured a start
     
     // Constants
     static constexpr U32 kBadOff = 0xFFFFFFFFu;  // Sentinel for failed append operations
@@ -133,8 +141,11 @@ private:
 
     // --- Low-level building blocks ---
     // Capture token start position (call before consuming first char).
-    void markTokenStart() noexcept { pendingStart_ = capturePos(); }
-    
+    inline void markTokenStart() noexcept { 
+        pendingStart_ = currentPosition(); 
+        pendingStartValid_ = true;
+    }
+
     // Read XML Name into current TagBuffer; returns (off,len) or 0-len on failure.
     std::pair<U32,U32> readNameToCurrentTagBuffer();
 
@@ -155,18 +166,8 @@ private:
     // Uses pendingStart_ for position info.
     bool makeTagToken(XMLToken& out, XMLTokenType t, U32 off, U32 len) noexcept;
 
-    // Fill SourcePosition for current stream point.
-    SourcePosition capturePos() const noexcept;
-
     // Validate end tag name matches current open element.
     bool validateEndTagMatch(const char* namePtr, U32 nameLen) noexcept;
-
-    // Error helpers.
-    bool emitError(XMLToken& out,
-                   TokenizerErrorCode code,
-                   ErrorSeverity sev,
-                   const char* msg,
-                   U32 msgLen) noexcept;
     
     // Intern error message in stable storage; returns pointer into errorArena_.
     const char* internError(const char* s, U32 len) noexcept;
@@ -187,14 +188,6 @@ private:
 };
 
 // ===== inline small bits =====
-
-inline XMLTokenizer::XMLTokenizer(BufferedInputStream& in,
-                                  TokenizerOptions opts,
-                                  TokenizerLimits lims) noexcept
-    : in_(in), opts_(opts), lims_(lims) {
-    reset();
-}
-
 inline void XMLTokenizer::reset() noexcept {
     state_ = State::Content;
     flags_.bits = 0;
@@ -227,13 +220,26 @@ inline void XMLTokenizer::reset() noexcept {
     
     // Reset pending position
     pendingStart_ = SourcePosition{};
+    pendingStartValid_ = false;
 }
 
+// Returns the position of the *next unread* input byte (start-of-token if called before consumption).
 inline SourcePosition XMLTokenizer::currentPosition() const noexcept {
     SourcePosition sp{};
     sp.byteOffset = in_.getTotalBytesRead();
     sp.line       = static_cast<U32>(in_.getCurrentLine());
     sp.column     = static_cast<U32>(in_.getCurrentColumn());
+#if defined(LXML_TRACK_CHAROFFSET)
+    // If character offset tracking is enabled, could be implemented here
+    // For now, leave as default (0)
+    sp.charOffset = 0;
+#endif
+#if defined(LXML_ERROR_CONTEXT)
+    // If error context tracking is enabled, could be implemented here
+    // For now, leave as defaults (0)
+    sp.contextStart = 0;
+    sp.contextEnd = 0;
+#endif
     return sp;
 }
 

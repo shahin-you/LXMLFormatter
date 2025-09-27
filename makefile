@@ -2,20 +2,24 @@
 # Compiler: GCC 13.3.0
 # Standard: C++17
 
-#compiler flags
+# Compiler flags
 CXX := g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Werror
 CXXFLAGS += -Wcast-align -Wcast-qual -Wshadow
 CXXFLAGS += -Woverloaded-virtual -Wmissing-include-dirs
 CXXFLAGS += -Wno-unused-parameter -Wno-unknown-pragmas 
+
 # Build type (default: release)
 BUILD_TYPE ?= release
 
 LDFLAGS :=
 ifeq ($(BUILD_TYPE),debug)
+    CXXFLAGS += -g -O0 -DDEBUG
+    BUILD_DIR := bin/debug
+else ifeq ($(BUILD_TYPE),sanitized)
     CXXFLAGS += -g -O0 -DDEBUG -fsanitize=address,undefined
     LDFLAGS += -fsanitize=address,undefined
-    BUILD_DIR := bin/debug
+    BUILD_DIR := bin/sanitized
 else
     CXXFLAGS += -O3 -DNDEBUG -march=native -flto
     LDFLAGS += -flto -s
@@ -82,10 +86,15 @@ clean:
 .PHONY: rebuild
 rebuild: clean all
 
-# Debug build
+# Debug build (clean, no sanitizers)
 .PHONY: debug
 debug:
 	@$(MAKE) BUILD_TYPE=debug
+
+# Sanitized build (with AddressSanitizer)
+.PHONY: sanitized
+sanitized:
+	@$(MAKE) BUILD_TYPE=sanitized
 
 # Release build
 .PHONY: release
@@ -96,6 +105,12 @@ release:
 .PHONY: run
 run: $(TARGET)
 	@$(TARGET) $(ARGS)
+
+# Memory check with Valgrind (uses release build)
+.PHONY: memory-check
+memory-check:
+	@$(MAKE) BUILD_TYPE=release
+	valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --error-exitcode=1 $(BUILD_DIR)/test_xmlformatter
 
 # Static analysis (optional - requires cppcheck)
 .PHONY: analyze
@@ -110,24 +125,28 @@ help:
 	@echo "XML Formatter Makefile"
 	@echo "====================="
 	@echo "Targets:"
-	@echo "  all      - Build the XML formatter (default)"
-	@echo "  test     - Build and run tests"
-	@echo "  clean    - Remove all build files"
-	@echo "  rebuild  - Clean and rebuild"
-	@echo "  debug    - Build with debug flags"
-	@echo "  release  - Build with optimization"
-	@echo "  run      - Run the XML formatter (use ARGS=... for arguments)"
-	@echo "  analyze  - Run static analysis with cppcheck (if available)"
-	@echo "  help     - Show this help message"
+	@echo "  all ------------ Build the XML formatter (default)"
+	@echo "  test ----------- Build and run tests"
+	@echo "  clean ---------- Remove all build files"
+	@echo "  rebuild -------- Clean and rebuild"
+	@echo "  debug ---------- Build clean debug version (no sanitizers)"
+	@echo "  sanitized ------ Build with AddressSanitizer (for memory testing)"
+	@echo "  release -------- Build with optimization"
+	@echo "  run ------------ Run the XML formatter (use ARGS=... for arguments)"
+	@echo "  memory-check --- Run tests with Valgrind (release build)"
+	@echo "  analyze -------- Run static analysis with cppcheck (if available)"
+	@echo "  help ----------- Show this help message"
 	@echo ""
 	@echo "Variables:"
-	@echo "  BUILD_TYPE=[debug|release] - Set build type (default: release)"
-	@echo "  ARGS=...                   - Arguments for 'make run'"
+	@echo "  BUILD_TYPE=[debug|sanitized|release] - Set build type (default: release)"
+	@echo "  ARGS=... ----------------------- Arguments for 'make run'"
 	@echo ""
 	@echo "Examples:"
 	@echo "  make                    # Build release version"
-	@echo "  make debug              # Build debug version"
+	@echo "  make debug              # Build debug version (VSCode friendly)"
+	@echo "  make sanitized          # Build with AddressSanitizer"
 	@echo "  make test               # Run tests"
+	@echo "  make memory-check       # Check for leaks with Valgrind"
 	@echo "  make run ARGS='input.xml output.xml'"
 
 # Include dependencies
