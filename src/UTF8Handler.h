@@ -50,6 +50,11 @@ namespace ShUTF8Detail {
         uint32_t min_cp;
     };
 
+    /* NOTE: in the following function, the first expression in `if` statements
+     * is always true, for example `byte >= 0x00` is always true when
+     * previous condition is already false (byte <= 0x7F). This is intentional
+     * for clarity and readability. compiler will optimize these out.
+     */
     constexpr Utf8Info make_utf8_info(std::size_t byte) noexcept {
         // ASCII: 0xxxxxxx (0x00-0x7F)
         if (byte <= 0x7F) {

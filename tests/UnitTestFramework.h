@@ -17,12 +17,11 @@
     *       `main()` provided at the bottom of this file will automatically
     *       discover and run every test that registers itself via the macro.
     *   4.  Run the binary; the framework prints a succinct pass/fail summary
-    *       and returns a `non-zero` exit status if any test fails (ideal for
-    *       CI pipelines).
+    *       and returns a `non-zero` exit status if any test fails.
     *   -----------------------------------------------------------------
     *   Design philosophy
     *   -----------------------------------------------------------------
-    *  Header-only & self-contained: just drop the file in `tests/` and
+    *   Header-only & self-contained: just drop the file in `tests/` and
     *        you are done.  No build-system gymnastics, no external downloads.
     *   Tiny surface: a handful of macros + one exception type. Enough
     *       for expressive assertions without the complexity of a full testing

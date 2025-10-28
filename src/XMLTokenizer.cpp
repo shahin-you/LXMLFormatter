@@ -230,4 +230,241 @@ bool XMLTokenizer::scanText(XMLToken& out) {
     return true;  // Token emitted
 }
 
+void XMLTokenizer::skipXMLSpace() {
+    while (true) {
+        int32_t ch = peekCp();
+        if (ch < 0 /*EOF*/|| !CharClass::isXMLWhitespace(static_cast<uint32_t>(ch)))
+            break;
+        getCp(); // consume
+    }
+}
+
+// Guarantees at least 'need' free bytes in current TagBuffer.
+// Grows buffer geometrically up to per-tag cap; reuses freelist if size matches.
+bool XMLTokenizer::ensureCurrentTagCapacity(ByteLen need) {
+    if (tagStack_.empty()) 
+        return false; // no current tag buffer
+
+    TagFrame& frame = tagStack_.back();
+    if (need <= (frame.buf.cap - frame.buf.used)) {
+        return true; // already enough space
+    }
+
+    // Need to grow. Check against limits first.
+    if (need > lims_.maxPerTagBytes) {
+        flags_.set(TokenizerFlags::Ended);
+        return false; // would exceed per-tag limit
+    }
+
+    // Compute new capacity: double current or just enough, capped.
+    ByteLen newCap = frame.buf.cap ? frame.buf.cap * 2 : 256;
+    if (newCap < frame.buf.used + need) {
+        newCap = frame.buf.used + need;
+    }
+    if (newCap > lims_.maxPerTagBytes) {
+        newCap = lims_.maxPerTagBytes;
+    }
+
+    // Try to reuse a freelist buffer of the right size.
+    if (!tagBufFreelist_.empty() && freelistBlockSize_ == newCap) {
+        frame.buf.mem = std::move(tagBufFreelist_.back());
+        tagBufFreelist_.pop_back();
+        frame.buf.cap = newCap;
+        return true;
+    }
+
+    // Allocate a new buffer.
+    try {
+        std::unique_ptr<char[]> newMem(new char[newCap]);
+        if (frame.buf.mem) {
+            // Copy existing data to new buffer.
+            std::memcpy(newMem.get(), frame.buf.mem.get(), frame.buf.used);
+        }
+        frame.buf.mem = std::move(newMem);
+        frame.buf.cap = newCap;
+        return true;
+    } catch (const std::bad_alloc&) {
+        flags_.set(TokenizerFlags::Ended);
+        return false; // allocation failed
+    }
+}
+// Writes 'len' bytes to current TagBuffer and returns starting offset on success.
+// Returns kBadOff on failure
+U32 XMLTokenizer::appendToCurrentTagBuf(const char* data, U32 len) {
+    if (tagStack_.empty()) 
+        return kBadOff; // no current tag buffer
+
+    TagFrame& frame = tagStack_.back();
+    if (!ensureCurrentTagCapacity(len)) return kBadOff;
+
+    const U32 off = frame.buf.used;
+    std::memcpy(frame.buf.mem.get() + off, data, len);
+    frame.buf.used += len;
+    return off;
+}
+
+// Emits the synthetic DocumentStart token (only once per stream).
+// Emits a fatal error if called after Started flag already set.
+bool XMLTokenizer::emitDocumentStart(XMLToken& out) noexcept {
+    if (flags_.test(TokenizerFlags::Started)) {
+        const char* msg = "DocumentStart already emitted";
+        return emitError(out, TokenizerErrorCode::DuplicateDocumentBoundary, 
+            ErrorSeverity::Fatal, msg,
+            static_cast<U32>(std::strlen(msg)));
+    }
+
+    flags_.set(TokenizerFlags::Started);
+    
+    const SourcePosition pos = currentPosition();
+    
+    out.type       = XMLTokenType::DocumentStart;
+    out.data       = nullptr;
+    out.length     = 0;
+    out.byteOffset = pos.byteOffset;
+    out.line       = pos.line;
+    out.column     = pos.column;
+
+#if defined(LXML_DEBUG_SLICES)
+    out.arena      = ArenaId::None;
+    out.generation = 0;
+#endif
+    pendingStartValid_ = false;
+    return true;
+}
+
+// Emits DocumentEnd or a fatal error if unclosed tags remain.
+// Sets Ended flag to prevent further token emission attempts.
+bool XMLTokenizer::emitDocumentEnd(XMLToken& out) noexcept {
+    if (flags_.test(TokenizerFlags::Ended)) {
+        return false;  // Already ended
+    }
+    
+    // Fatal error: unclosed tags
+    if (!tagStack_.empty()) {
+        flags_.set(TokenizerFlags::Ended);
+        const char* msg = "Unclosed tag at end of document";
+        return emitError(out,
+            TokenizerErrorCode::UnexpectedEOF,
+            ErrorSeverity::Fatal,
+            msg,
+            static_cast<U32>(std::strlen(msg)));
+    }
+
+    flags_.set(TokenizerFlags::Ended);
+    
+    const SourcePosition pos = currentPosition();
+    
+    out.type       = XMLTokenType::DocumentEnd;
+    out.data       = nullptr;
+    out.length     = 0;
+    out.byteOffset = pos.byteOffset;
+    out.line       = pos.line;
+    out.column     = pos.column;
+
+#if defined(LXML_DEBUG_SLICES)
+    out.arena      = ArenaId::None;
+    out.generation = 0;
+#endif
+    pendingStartValid_ = false;
+    return true;
+}
+
+// Allocate or reuse a TagBuffer for the current frame.
+// Always allocate full-size per-tag buffer, no growth is happening here.
+bool XMLTokenizer::ensureCurrentTagBuffer() noexcept {
+    if (tagStack_.empty())
+        return false;
+    
+    // Guard against misconfiguration
+    if (lims_.maxPerTagBytes == 0) {
+        flags_.set(TokenizerFlags::Ended);
+        return false;
+    }
+    
+    TagFrame& frame = tagStack_.back();
+    
+    // Already has buffer
+    if (frame.buf.mem) {
+        noteTagArena(frame.buf.cap);
+        return true;
+    }
+    
+    // Try freelist first
+    if (!tagBufFreelist_.empty()) {
+        frame.buf.mem = std::move(tagBufFreelist_.back());
+        tagBufFreelist_.pop_back();
+        frame.buf.cap = lims_.maxPerTagBytes;
+        frame.buf.used = 0;
+        noteTagArena(frame.buf.cap);
+        return true;
+    }
+    
+    // Allocate new buffer at full size
+    try {
+        frame.buf.mem.reset(new char[lims_.maxPerTagBytes]);
+        frame.buf.cap = lims_.maxPerTagBytes;
+        frame.buf.used = 0;
+        noteTagArena(frame.buf.cap);
+        return true;
+    } catch (const std::bad_alloc&) {
+        flags_.set(TokenizerFlags::Ended);
+        return false;
+    }
+}
+
+// Push a new TagFrame onto the stack.
+bool XMLTokenizer::pushTagFrame() {
+    if (tagStack_.size() >= lims_.maxOpenDepth) {
+        flags_.set(TokenizerFlags::Ended);
+        // Optional: emit fatal depth error token
+        XMLToken dummy;
+        const char* msg = "Maximum tag nesting depth exceeded";
+        emitError(dummy, TokenizerErrorCode::LimitExceeded,
+                  ErrorSeverity::Fatal,
+                  msg,
+                  static_cast<U32>(std::strlen(msg)));
+        return false;
+    }
+
+    const SourcePosition pos = currentPosition();
+
+    tagStack_.emplace_back();
+    TagFrame& frame = tagStack_.back();
+    frame.startPos = pos;
+    frame.ctx.startLine       = pos.line;
+    frame.ctx.startColumn     = pos.column;
+    frame.ctx.startByteOffset = pos.byteOffset;
+
+#if defined(LXML_ENABLE_STATS)
+    stats_.maxOpenDepth = std::max(stats_.maxOpenDepth, static_cast<U32>(tagStack_.size()));
+#endif
+
+    // Buffer allocation deferred to ensureCurrentTagBuffer()
+    return true;
+}
+
+// Pop the current TagFrame, recycling its buffer if possible.
+void XMLTokenizer::popTagFrame() noexcept {
+    if (tagStack_.empty())
+        return;
+    
+    // Move frame out first, then pop
+    TagFrame frame = std::move(tagStack_.back());
+    tagStack_.pop_back();
+    
+    // Now work with local copy
+    constexpr ByteLen kFreelistMemoryBudget = 64u * 1024u * 1024u;
+    const size_t maxFreelistSize = std::max(
+        size_t{4},
+        static_cast<size_t>(kFreelistMemoryBudget / std::max<ByteLen>(1, lims_.maxPerTagBytes))
+    );
+    
+    if (frame.buf.mem &&
+        frame.buf.cap == lims_.maxPerTagBytes &&
+        tagBufFreelist_.size() < maxFreelistSize) {
+        tagBufFreelist_.push_back(std::move(frame.buf.mem));
+    }
+    // frame destructor runs here (handles any non-cached buffer cleanup)
+}
+
 } // namespace LXMLFormatter

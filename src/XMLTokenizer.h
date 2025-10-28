@@ -137,7 +137,13 @@ private:
     }
     
     // Allocate or reuse a TagBuffer for the current frame.
-    bool ensureCurrentTagBuffer();
+    // Always allocate full-size per-tag buffer, no growth is happening here.
+    inline void noteTagArena(ByteLen cap) {
+        #if defined(LXML_ENABLE_STATS)
+            stats_.maxTagArena = std::max(stats_.maxTagArena, cap);
+        #endif
+    }
+    bool ensureCurrentTagBuffer() noexcept;
 
     // --- Low-level building blocks ---
     // Capture token start position (call before consuming first char).
@@ -182,9 +188,6 @@ private:
     // Read one code point (via BufferedInputStream).
     int32_t getCp()  { return in_.getChar();  }
     int32_t peekCp() { return in_.peekChar(); }
-
-    // Phase-1: normalize newlines if requested.
-    void maybeNormalizeCRLFToLF(uint32_t cp, std::string& dst);
 };
 
 // ===== inline small bits =====

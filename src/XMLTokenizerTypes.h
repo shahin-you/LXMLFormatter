@@ -99,6 +99,7 @@ enum class TokenizerErrorCode : U16 {
     UnterminatedTag,
     ExpectedEqualsAfterAttrName,
     ExpectedQuoteForAttrValue,
+    DuplicateDocumentBoundary,
 
     // Entities / encoding (0x40–0x4F)
     InvalidUTF8     = 0x40,
@@ -339,6 +340,7 @@ struct TokenizerStats {
     U64     errorsEmitted = 0;
     ByteLen maxTextArena  = 0;
     ByteLen maxTagArena   = 0;
+    U32     maxOpenDepth  = 0;
 };
 #  define LXML_STAT_INC(field, val) ((field) += (val))
 #else
