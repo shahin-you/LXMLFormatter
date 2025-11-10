@@ -521,5 +521,4 @@ bool XMLTokenizer::validateEndTagMatch(const char* namePtr, U32 nameLen) noexcep
     return std::memcmp(namePtr, startTagName, nameLen) == 0;
 }
 
-
 } // namespace LXMLFormatter
