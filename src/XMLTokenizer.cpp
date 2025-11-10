@@ -521,5 +521,139 @@ bool XMLTokenizer::validateEndTagMatch(const char* namePtr, U32 nameLen) noexcep
     return std::memcmp(namePtr, startTagName, nameLen) == 0;
 }
 
+bool XMLTokenizer::nextToken(XMLToken& out) {
+    // === Guard 1: First call always emits DocumentStart ===
+    if (!flags_.test(TokenizerFlags::Started)) {
+        return emitDocumentStart(out);
+    }
+    
+    // === Guard 2: Already ended, no more tokens ===
+    if (flags_.test(TokenizerFlags::Ended)) {
+        return false;
+    }
+    
+    // === Main DFA Loop ===
+    // Keep processing until we emit a token (return true) or reach end (return false)
+    while (true) {
+        switch (state_) {
+            case State::Content: {
+                // Outside tags: either text content or start of a tag
+                
+                int32_t ch = peekCp();
+                
+                // EOF in content → emit DocumentEnd
+                if (ch < 0) {
+                    return emitDocumentEnd(out);
+                }
+                
+                // '<' → transition to TagOpen
+                if (ch == '<') {
+                    getCp();  // Consume '<'
+                    state_ = State::TagOpen;
+                    continue;  // Loop to handle TagOpen state
+                }
+                
+                // Text content → scanText (already implemented!)
+                if (scanText(out)) {
+                    // state_ remains Content after scanText
+                    return true;  // Text token emitted
+                }
+                
+                // scanText returned false but no EOF and no '<'?
+                // This shouldn't happen, but defend against it
+                return emitError(out, TokenizerErrorCode::InvalidCharAfterLT,
+                                ErrorSeverity::Fatal,
+                                "Unexpected character in content", 30);
+            }
+            
+            case State::TagOpen: {
+                // Just consumed '<', decide what follows
+                
+                int32_t ch = peekCp();
+                
+                if (ch < 0) {
+                    // EOF after '<' → unclosed tag
+                    return emitError(out, TokenizerErrorCode::UnexpectedEOF,
+                                    ErrorSeverity::Fatal,
+                                    "Unexpected EOF after '<'", 24);
+                }
+                
+                if (ch == '/') {
+                    // '</...' → end tag
+                    getCp();  // Consume '/'
+                    state_ = State::EndTagName;
+                    // TODO: implement parseEndTag()
+                    return emitError(out, TokenizerErrorCode::None,
+                                    ErrorSeverity::Fatal,
+                                    "End tags not yet implemented", 28);
+                }
+                
+                if (ch == '!') {
+                    // '<!...' → comment, CDATA, or DOCTYPE
+                    // Phase-1: not supported
+                    return emitError(out, TokenizerErrorCode::InvalidCharAfterLT,
+                                    ErrorSeverity::Fatal,
+                                    "Comments/CDATA/DOCTYPE not supported in Phase-1", 47);
+                }
+                
+                if (ch == '?') {
+                    // '<?...' → processing instruction
+                    // Phase-1: not supported
+                    return emitError(out, TokenizerErrorCode::InvalidCharAfterLT,
+                                    ErrorSeverity::Fatal,
+                                    "Processing instructions not supported in Phase-1", 48);
+                }
+                
+                if (CharClass::isNameStart(static_cast<U32>(ch))) {
+                    // '<Name...' → start tag
+                    state_ = State::StartTagName;
+                    // TODO: implement parseStartTag()
+                    return emitError(out, TokenizerErrorCode::None,
+                                    ErrorSeverity::Fatal,
+                                    "Start tags not yet implemented", 30);
+                }
+                
+                // Invalid character after '<'
+                return emitError(out, TokenizerErrorCode::InvalidCharAfterLT,
+                                ErrorSeverity::Fatal,
+                                "Invalid character after '<'", 28);
+            }
+            
+            case State::StartTagName:
+            case State::EndTagName:
+            case State::InTag:
+            case State::AttrName:
+            case State::AfterAttrName:
+            case State::BeforeAttrValue:
+            case State::AttrValueQuoted:
+                // These states need parseStartTag, parseEndTag, parseAttributesBasic
+                // For now, emit error (shouldn't reach here yet)
+                return emitError(out, TokenizerErrorCode::None,
+                                ErrorSeverity::Fatal,
+                                "Tag parsing not yet implemented", 31);
+            
+            case State::AfterBang:
+            case State::CommentStart1:
+            case State::CommentStart2:
+            case State::InComment:
+            case State::CommentEnd1:
+            case State::CommentEnd2:
+            case State::CDataStart:
+            case State::InCData:
+            case State::CDataEnd1:
+            case State::CDataEnd2:
+            case State::PITarget:
+            case State::PIContent:
+            case State::Resyncing:
+                // Phase-1: these should never be reached
+                return emitError(out, TokenizerErrorCode::None,
+                                ErrorSeverity::Fatal,
+                                "Unsupported state in Phase-1", 28);
+        }
+    }
+    
+    // Unreachable (loop always returns via break or continue)
+    return false;
+}
 
 } // namespace LXMLFormatter
