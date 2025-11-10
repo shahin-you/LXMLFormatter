@@ -467,4 +467,59 @@ void XMLTokenizer::popTagFrame() noexcept {
     // frame destructor runs here (handles any non-cached buffer cleanup)
 }
 
+bool XMLTokenizer::makeTagToken(XMLToken& out, XMLTokenType type, U32 offset, U32 length) noexcept {
+    // Caller MUST ensure offset and length are valid:
+    //   - offset < frame.buf.used
+    //   - offset + length <= frame.buf.used
+    // Violating this contract results in undefined behavior (out-of-bounds read).
+    
+    const SourcePosition where = pendingStartValid_ ? pendingStart_ : currentPosition();
+    pendingStartValid_ = false;
+    
+    const char* data = nullptr;
+    if (length != 0 && !tagStack_.empty() && tagStack_.back().buf.mem) {
+        data = tagStack_.back().buf.mem.get() + offset;
+    }
+    
+    out.type       = type;
+    out.data       = data;
+    out.length     = length;
+    out.byteOffset = where.byteOffset;
+    out.line       = where.line;
+    out.column     = where.column;
+
+#if defined(LXML_DEBUG_SLICES)
+    out.arena      = ArenaId::Tag;
+    out.generation = tagStack_.empty() ? 0 : tagStack_.back().buf.generation;
+#endif
+
+    return true;
+}
+
+bool XMLTokenizer::validateEndTagMatch(const char* namePtr, U32 nameLen) noexcept {
+    // Caller MUST check namePtr to be valid memory
+    // Must have an open tag to close
+    if (tagStack_.empty())
+        return false;
+    
+    const TagFrame& frame = tagStack_.back();
+    const TagContext& ctx = frame.ctx;
+    
+    // Length mismatch → different names
+    if (nameLen != ctx.nameLen)
+        return false;
+    
+    // Empty names are considered matching (edge case)
+    if (nameLen == 0)
+        return true;
+    
+    // Buffer must exist to retrieve open tag name
+    if (!frame.buf.mem)
+        return false;
+    
+    const char* startTagName = frame.buf.mem.get() + ctx.nameMark.offset;
+    return std::memcmp(namePtr, startTagName, nameLen) == 0;
+}
+
+
 } // namespace LXMLFormatter
