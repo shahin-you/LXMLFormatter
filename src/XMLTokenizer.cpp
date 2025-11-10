@@ -220,7 +220,7 @@ bool XMLTokenizer::scanText(XMLToken& out) {
         if (textArena_.buf.size() >= static_cast<size_t>(lims_.maxTextRunBytes)) {
             flags_.set(TokenizerFlags::Ended);
             return emitError(out, TokenizerErrorCode::LimitExceeded,
-                           ErrorSeverity::Fatal, "Text run exceeds limit", 23);
+                           ErrorSeverity::Fatal, "Text run exceeds limit", 22);
         }
     }
     
